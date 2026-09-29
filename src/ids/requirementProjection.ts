@@ -5,6 +5,7 @@ import type {
   IdsProjectSpecification,
   IdsValueConstraint,
   ObjectRequirements,
+  PropertyRequirement,
   Project,
   RequirementBase,
 } from "../project/types";
@@ -18,6 +19,8 @@ import { effectiveIdsScope } from "./authoring";
 
 const PROJECTED_FACET_ID = "idsCanonicalFacetId";
 const PROJECTED_SPECIFICATION_ID = "idsCanonicalSpecificationId";
+const PROJECTED_PROPERTY_SET_CONSTRAINT = "idsCanonicalPropertySetConstraint";
+const PROJECTED_PROPERTY_NAME_CONSTRAINT = "idsCanonicalPropertyNameConstraint";
 
 const EMPTY_REQUIREMENTS = (): ObjectRequirements => ({
   attributes: [],
@@ -75,6 +78,71 @@ export function getIdsProjectedFacetSection(
 ): "applicability" | "requirements" | undefined {
   const value = requirement?.extensions?.idsFacetSection;
   return value === "applicability" || value === "requirements" ? value : undefined;
+}
+
+function cloneConstraint(value: IdsValueConstraint): IdsValueConstraint {
+  return value.enumerations
+    ? { ...value, enumerations: [...value.enumerations] }
+    : { ...value };
+}
+
+function projectedConstraint(
+  requirement: Pick<RequirementBase, "extensions"> | null | undefined,
+  key: string,
+): IdsValueConstraint | undefined {
+  const value = requirement?.extensions?.[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as IdsValueConstraint;
+}
+
+/** Full canonical constraint behind the projected Pset/Qto name. */
+export function getIdsProjectedPropertySetConstraint(
+  requirement: Pick<RequirementBase, "extensions"> | null | undefined,
+): IdsValueConstraint | undefined {
+  return projectedConstraint(requirement, PROJECTED_PROPERTY_SET_CONSTRAINT);
+}
+
+/** Full canonical constraint behind the projected property name. */
+export function getIdsProjectedPropertyNameConstraint(
+  requirement: Pick<RequirementBase, "extensions"> | null | undefined,
+): IdsValueConstraint | undefined {
+  return projectedConstraint(requirement, PROJECTED_PROPERTY_NAME_CONSTRAINT);
+}
+
+function constraintKey(value: IdsValueConstraint | undefined): string {
+  if (!value) return "";
+  return JSON.stringify([
+    value.simpleValue ?? null,
+    value.enumerations ?? null,
+    value.pattern ?? null,
+    value.minInclusive ?? null,
+    value.minExclusive ?? null,
+    value.maxInclusive ?? null,
+    value.maxExclusive ?? null,
+    value.length ?? null,
+    value.minLength ?? null,
+    value.maxLength ?? null,
+  ]);
+}
+
+/**
+ * UI grouping key for a property requirement.
+ * Canonical IDS rows are isolated by specification and section, while facets
+ * describing the same Pset constraint inside that source stay together.
+ */
+export function getPropertyRequirementGroupKey(
+  requirement: Pick<PropertyRequirement, "source" | "psetName" | "extensions">,
+): string {
+  const specificationId = getIdsProjectedSpecificationId(requirement);
+  if (!specificationId) {
+    return `${requirement.source}:${requirement.psetName || "(custom)"}`;
+  }
+  return [
+    "ids",
+    specificationId,
+    getIdsProjectedFacetSection(requirement) ?? "requirements",
+    constraintKey(getIdsProjectedPropertySetConstraint(requirement)),
+  ].join(":");
 }
 
 function occurrence(cardinality: IdsFacetCardinality | undefined): IdsFacetCardinality {
@@ -227,8 +295,13 @@ function appendFacet(
       const psetName = psetAlternatives[0] ?? formatIdsConstraint(facet.propertySet);
       const propertyName = nameAlternatives[0] ?? formatIdsConstraint(facet.baseName);
       const value = constraintDetails(facet.value);
+      const normalizedPsetName = psetName.toUpperCase();
       const source =
-        psetName.startsWith("Pset_") ? "PSET" : psetName.startsWith("Qto_") ? "QTO" : "CUSTOM";
+        normalizedPsetName.startsWith("PSET_")
+          ? "PSET"
+          : normalizedPsetName.startsWith("QTO_")
+            ? "QTO"
+            : "CUSTOM";
       output.properties.push({
         ...base,
         source,
@@ -247,6 +320,11 @@ function appendFacet(
         note: facet.authoring?.note ?? facet.instructions,
         priklady: facet.authoring?.examples,
         isApplicability,
+        extensions: {
+          ...base.extensions,
+          [PROJECTED_PROPERTY_SET_CONSTRAINT]: cloneConstraint(facet.propertySet),
+          [PROJECTED_PROPERTY_NAME_CONSTRAINT]: cloneConstraint(facet.baseName),
+        },
       });
       return;
     }

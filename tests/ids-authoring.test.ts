@@ -18,6 +18,9 @@ import {
   requirementGroupMatchesEntity,
 } from "../src/project/requirementFingerprint.ts";
 import {
+  getIdsProjectedPropertyNameConstraint,
+  getIdsProjectedPropertySetConstraint,
+  getPropertyRequirementGroupKey,
   isIdsProjectedRequirement,
   projectIdsRequirementsForEntity,
 } from "../src/ids/requirementProjection.ts";
@@ -112,6 +115,7 @@ test("source edit updates every projection without persisting projected rows", (
   assert.equal(property.kind, "property");
   if (property.kind !== "property") return;
   property.value = { pattern: "^NEW.*" };
+  property.propertySet = { simpleValue: "Pset_Renamed" };
   const next = saveIdsSpecification(project, draft);
 
   for (const object of Object.values(next.objects)) {
@@ -119,6 +123,11 @@ test("source edit updates every projection without persisting projected rows", (
     const projected = projectIdsRequirementsForEntity(next, object.ifcEntity);
     assert.equal(projected.properties[0]?.constraint, "PATTERN");
     assert.equal(projected.properties[0]?.value, "^NEW.*");
+    assert.equal(projected.properties[0]?.psetName, "Pset_Renamed");
+    assert.deepEqual(
+      getIdsProjectedPropertySetConstraint(projected.properties[0]),
+      { simpleValue: "Pset_Renamed" },
+    );
     assert.equal(isIdsProjectedRequirement(projected.properties[0]), true);
   }
 });
@@ -136,6 +145,75 @@ test("same Pset in two IDS specifications stays in two source groups", () => {
   assert.equal(idsPsets.length, 2);
   assert.notEqual(idsPsets[0].fingerprint, idsPsets[1].fingerprint);
   assert.notEqual(idsPsets[0].idsReference?.specificationId, idsPsets[1].idsReference?.specificationId);
+});
+
+test("entity projection keeps equal Psets isolated by IDS specification and facet section", () => {
+  const project = projectBase();
+  addObject(project, "wall-1", "IfcWall");
+  const first = specification("spec-1", "IFCWALL");
+  first.applicability.push({
+    id: "spec-1:applicability-property",
+    kind: "property",
+    propertySet: { simpleValue: "Pset_Common" },
+    baseName: { simpleValue: "Status" },
+    cardinality: "required",
+  });
+  first.requirements.push({
+    id: "spec-1:second-property",
+    kind: "property",
+    propertySet: { simpleValue: "Pset_Common" },
+    baseName: { simpleValue: "Name" },
+    cardinality: "required",
+  });
+  project.idsSpecifications = [
+    first,
+    specification("spec-2", "IFCWALL"),
+  ];
+
+  const projected = projectIdsRequirementsForEntity(project, "IfcWall");
+  assert.equal(projected.properties.length, 4);
+
+  const byId = new Map(projected.properties.map((item) => [item.id, item]));
+  const firstRequirement = byId.get("ids-projection:requirements:spec-1:property")!;
+  const samePsetRequirement = byId.get("ids-projection:requirements:spec-1:second-property")!;
+  const applicability = byId.get("ids-projection:applicability:spec-1:applicability-property")!;
+  const otherSpecification = byId.get("ids-projection:requirements:spec-2:property")!;
+
+  assert.equal(
+    getPropertyRequirementGroupKey(firstRequirement),
+    getPropertyRequirementGroupKey(samePsetRequirement),
+  );
+  assert.notEqual(
+    getPropertyRequirementGroupKey(firstRequirement),
+    getPropertyRequirementGroupKey(applicability),
+  );
+  assert.notEqual(
+    getPropertyRequirementGroupKey(firstRequirement),
+    getPropertyRequirementGroupKey(otherSpecification),
+  );
+});
+
+test("projected Pset retains OR constraint instead of presenting one alternative as the source", () => {
+  const project = projectBase();
+  addObject(project, "wall-1", "IfcWall");
+  const source = specification("spec-or", "IFCWALL");
+  const property = source.requirements[0];
+  assert.equal(property.kind, "property");
+  if (property.kind !== "property") return;
+  property.propertySet = { enumerations: ["Pset_One", "Pset_Two"] };
+  property.baseName = { enumerations: ["Reference", "Status"] };
+  project.idsSpecifications = [source];
+
+  const projected = projectIdsRequirementsForEntity(project, "IfcWall");
+  assert.equal(projected.properties[0]?.psetName, "Pset_One");
+  assert.deepEqual(
+    getIdsProjectedPropertySetConstraint(projected.properties[0]),
+    { enumerations: ["Pset_One", "Pset_Two"] },
+  );
+  assert.deepEqual(
+    getIdsProjectedPropertyNameConstraint(projected.properties[0]),
+    { enumerations: ["Reference", "Status"] },
+  );
 });
 
 test("entity-scoped groups exclude IDS requirements for unrelated entities", () => {

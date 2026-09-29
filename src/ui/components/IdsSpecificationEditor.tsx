@@ -41,11 +41,12 @@ const ConstraintEditor: React.FC<{
   value?: IdsValueConstraint;
   onChange: (value: IdsValueConstraint | undefined) => void;
   required?: boolean;
-}> = ({ label, value, onChange, required }) => {
+  testId?: string;
+}> = ({ label, value, onChange, required, testId }) => {
   const mode = constraintMode(value);
   const update = (patch: Partial<IdsValueConstraint>) => onChange({ ...(value ?? {}), ...patch });
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" data-testid={testId}>
       <div className="mb-1 flex items-center gap-2">
         <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
           {label}{required ? " *" : ""}
@@ -214,10 +215,16 @@ const AuthoringFields: React.FC<{
 const FacetEditor: React.FC<{
   facet: IdsProjectFacet;
   project: Project;
+  focused?: boolean;
   onChange: (facet: IdsProjectFacet) => void;
   onRemove: () => void;
   onMove: (direction: -1 | 1) => void;
-}> = ({ facet, project, onChange, onRemove, onMove }) => {
+}> = ({ facet, project, focused, onChange, onRemove, onMove }) => {
+  const elementRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!focused) return;
+    elementRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focused]);
   const patch = (next: Partial<IdsProjectFacet>) => onChange({ ...facet, ...next } as IdsProjectFacet);
   const changeClassificationSystem = (value: IdsValueConstraint | undefined) => {
     if (facet.kind !== "classification") return;
@@ -230,7 +237,15 @@ const FacetEditor: React.FC<{
     });
   };
   return (
-    <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-2.5">
+    <div
+      ref={elementRef}
+      data-ids-facet-id={facet.id}
+      className={`rounded-lg border bg-violet-50/40 p-2.5 ${
+        focused
+          ? "border-violet-500 ring-2 ring-violet-200"
+          : "border-violet-200"
+      }`}
+    >
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <select
           className="rounded border border-violet-300 bg-white px-2 py-1 text-xs font-semibold text-violet-800"
@@ -277,8 +292,19 @@ const FacetEditor: React.FC<{
         )}
         {facet.kind === "property" && (
           <>
-            <ConstraintEditor label="Property set" value={facet.propertySet} required onChange={(propertySet) => onChange({ ...facet, propertySet: propertySet ?? {} })} />
-            <ConstraintEditor label="Vlastnost" value={facet.baseName} required onChange={(baseName) => onChange({ ...facet, baseName: baseName ?? {} })} />
+            <ConstraintEditor
+              label="Název skupiny vlastností (Pset/Qto)"
+              value={facet.propertySet}
+              required
+              testId={`ids-property-set-editor-${facet.id}`}
+              onChange={(propertySet) => onChange({ ...facet, propertySet: propertySet ?? {} })}
+            />
+            <ConstraintEditor
+              label="Název vlastnosti"
+              value={facet.baseName}
+              required
+              onChange={(baseName) => onChange({ ...facet, baseName: baseName ?? {} })}
+            />
             <ConstraintEditor label="Hodnota" value={facet.value} onChange={(value) => onChange({ ...facet, value })} />
             <input className={inputClass} placeholder="IDS dataType (např. IFCLABEL)" value={facet.dataType ?? ""} onChange={(e) => onChange({ ...facet, dataType: e.target.value || undefined })} />
           </>
@@ -339,8 +365,9 @@ const SectionEditor: React.FC<{
   section: IdsFacetSection;
   facets: IdsProjectFacet[];
   project: Project;
+  focusedFacetId?: string | null;
   onChange: (facets: IdsProjectFacet[]) => void;
-}> = ({ section, facets, project, onChange }) => {
+}> = ({ section, facets, project, focusedFacetId, onChange }) => {
   const move = (index: number, direction: -1 | 1) => {
     const target = index + direction;
     if (target < 0 || target >= facets.length) return;
@@ -380,6 +407,7 @@ const SectionEditor: React.FC<{
             key={facet.id}
             facet={facet}
             project={project}
+            focused={facet.id === focusedFacetId}
             onChange={(nextFacet) => onChange(facets.map((item, itemIndex) => itemIndex === index ? nextFacet : item))}
             onRemove={() => onChange(facets.filter((_, itemIndex) => itemIndex !== index))}
             onMove={(direction) => move(index, direction)}
@@ -394,8 +422,9 @@ const SectionEditor: React.FC<{
 export const IdsSpecificationEditor: React.FC<{
   project: Project;
   value: IdsProjectSpecification;
+  focusedFacetId?: string | null;
   onChange: (value: IdsProjectSpecification) => void;
-}> = ({ project, value, onChange }) => {
+}> = ({ project, value, focusedFacetId, onChange }) => {
   const update = (patch: Partial<IdsProjectSpecification>) => onChange({ ...value, ...patch });
   return (
     <div className="space-y-3">
@@ -443,10 +472,21 @@ export const IdsSpecificationEditor: React.FC<{
         </div>
       </section>
       <div className="grid grid-cols-1 gap-3 2xl:grid-cols-2">
-        <SectionEditor section="applicability" facets={value.applicability} project={project} onChange={(applicability) => update({ applicability })} />
-        <SectionEditor section="requirements" facets={value.requirements} project={project} onChange={(requirements) => update({ requirements })} />
+        <SectionEditor
+          section="applicability"
+          facets={value.applicability}
+          project={project}
+          focusedFacetId={focusedFacetId}
+          onChange={(applicability) => update({ applicability })}
+        />
+        <SectionEditor
+          section="requirements"
+          facets={value.requirements}
+          project={project}
+          focusedFacetId={focusedFacetId}
+          onChange={(requirements) => update({ requirements })}
+        />
       </div>
     </div>
   );
 };
-

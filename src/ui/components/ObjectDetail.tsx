@@ -21,17 +21,30 @@ import {
 import { makeId } from "../../utils/id";
 import { generateHumanReadable, filterObjectByPhase, matchesOccurrenceFilter } from "../../utils/humanReadableIds";
 import { getEffectiveUseCaseIds, requirementAppliesToUseCase } from "../../project/useCaseResolve";
-import type { ClassificationSystemEntry, CodeList, IdsMetadata, IdsProjectSpecification, IdsSpecMetadata, MaterialRequirement, ObjectRequirements, Phase, Project, ProjectObject, PropertyRequirement, RelationRequirement } from "../../project/types";
+import type { ClassificationSystemEntry, CodeList, IdsMetadata, IdsProjectSpecification, IdsSpecMetadata, MaterialRequirement, ObjectRequirements, Phase, Project, ProjectObject, PropertyRequirement, RelationRequirement, RequirementBase } from "../../project/types";
 import { ENUM_CODELIST_ID_KEY, formatEnumValues, parseEnumValues } from "../../project/enumeration";
 import { DocLink } from "./DocLink";
 import { EntitySelect } from "./EntitySelect";
 import { RequirementGroupsPanel } from "./RequirementGroupsPanel";
 import { groupRequirementsByItem, type RequirementItemKind, type RequirementItemGroup } from "../../project/requirementFingerprint";
-import { IdsSpecificationsPanel } from "./IdsSpecificationsPanel";
-import { getSpecificationsForEntity } from "../../ids/specifications";
+import {
+  IdsSpecificationsPanel,
+  type IdsSpecificationEditRequest,
+} from "./IdsSpecificationsPanel";
+import {
+  buildIdsSpecificationOrdinalIndex,
+  formatIdsConstraint,
+  getSpecificationsForEntity,
+} from "../../ids/specifications";
 import { hasProjectObjectIdsDefinition } from "../../ids/projectDefinition";
 import {
+  getIdsProjectedFacetId,
+  getIdsProjectedFacetSection,
+  getIdsProjectedPropertyNameConstraint,
+  getIdsProjectedPropertySetConstraint,
+  getIdsProjectedSpecificationId,
   getIdsProjectedSpecificationName,
+  getPropertyRequirementGroupKey,
   isIdsProjectedRequirement,
   projectIdsRequirementsForEntity,
   withoutIdsProjectedRequirements,
@@ -2195,7 +2208,8 @@ export const ObjectDetail: React.FC<Props> = ({
     }
     return "object";
   });
-  const [editIdsSpecificationId, setEditIdsSpecificationId] = useState<string | null>(null);
+  const editIdsRequestSequenceRef = useRef(0);
+  const [editIdsRequest, setEditIdsRequest] = useState<IdsSpecificationEditRequest | null>(null);
   const selectedPredefinedType = object.predefinedType.mode === "ENUM"
     ? object.predefinedType.value
     : undefined;
@@ -2203,6 +2217,51 @@ export const ObjectDetail: React.FC<Props> = ({
     () => getSpecificationsForEntity(project, object.ifcEntity, selectedPredefinedType),
     [project, object.ifcEntity, selectedPredefinedType],
   );
+  const idsSpecificationOrdinalById = useMemo(
+    () => buildIdsSpecificationOrdinalIndex(project?.idsSpecifications ?? []),
+    [project?.idsSpecifications],
+  );
+  const openIdsSpecificationEditor = useCallback(
+    (specification: IdsProjectSpecification, facetId?: string) => {
+      editIdsRequestSequenceRef.current += 1;
+      setEditIdsRequest({
+        specificationId: specification.id,
+        facetId,
+        requestId: editIdsRequestSequenceRef.current,
+      });
+      setRequirementsViewMode("specifications");
+      onFocusIdsSpecification?.(specification);
+    },
+    [onFocusIdsSpecification],
+  );
+  const renderIdsEditAction = (requirement: RequirementBase) => {
+    const specificationId = getIdsProjectedSpecificationId(requirement);
+    if (!specificationId) return null;
+    const specification = project?.idsSpecifications?.find(
+      (item) => item.id === specificationId,
+    );
+    if (!specification) return null;
+    const ordinal = idsSpecificationOrdinalById.get(specificationId);
+    const openEditor = () => openIdsSpecificationEditor(
+      specification,
+      getIdsProjectedFacetId(requirement),
+    );
+    return (
+      <a
+        role="button"
+        tabIndex={0}
+        className="pointer-events-auto rounded border border-violet-300 bg-white px-2 py-1 text-[10px] font-semibold text-violet-800 hover:bg-violet-100"
+        onClick={openEditor}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openEditor();
+        }}
+      >
+        Upravit IDS{ordinal ? ` #${ordinal}` : ""}
+      </a>
+    );
+  };
   const projectIdsDefinitionCount = hasProjectObjectIdsDefinition(project, object) ? 1 : 0;
   const [selectedItemGroup, setSelectedItemGroup] = useState<{ kind: RequirementItemKind; fingerprint: string } | null>(null);
   /** Stabilní identifikátor vybrané skupiny (kind + id reprezentativního požadavku), aby po uložení změn (změna fingerprintu) zůstal záznam otevřený. */
@@ -2802,7 +2861,7 @@ export const ObjectDetail: React.FC<Props> = ({
   const propertyGroups = useMemo(() => {
     const map = new Map<string, { key: string; source: PropertyRequirement["source"]; psetName?: string; properties: PropertyRequirement[] }>();
     effectiveRequirements.properties.forEach((prop) => {
-      const key = groupKey(prop.source, prop.psetName);
+      const key = getPropertyRequirementGroupKey(prop);
       if (!map.has(key)) {
         map.set(key, { key, source: prop.source, psetName: prop.psetName, properties: [] });
       }
@@ -2902,6 +2961,7 @@ export const ObjectDetail: React.FC<Props> = ({
 
   const invalidSchemaGroups = useMemo(() => {
     return propertyGroups
+      .filter((g) => !g.properties.every(isIdsProjectedRequirement))
       .filter((g) => g.source !== "CUSTOM")
       .filter((g) => !!g.psetName && !g.psetName!.startsWith("_NEW_"))
       .filter((g) => !isGroupAllowed(g.source, g.psetName))
@@ -4295,7 +4355,7 @@ export const ObjectDetail: React.FC<Props> = ({
           }}
           onFocusSpecification={onFocusIdsSpecification}
           focusedSpecificationId={focusedIdsSpecificationId}
-          editSpecificationId={editIdsSpecificationId}
+          editRequest={editIdsRequest}
           onSaveSpecification={onSaveIdsSpecification}
           onDuplicateSpecification={onDuplicateIdsSpecification}
           onDeleteSpecification={onDeleteIdsSpecification}
@@ -5557,7 +5617,13 @@ export const ObjectDetail: React.FC<Props> = ({
                           )}
                           {!hiddenAttributeColumns.has(13) && (
                             <td className="px-2 py-2 text-right">
-                              <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("attributes", attr.id)}>Odebrat</button>
+                              {isIdsProjected
+                                ? renderIdsEditAction(attr)
+                                : (
+                                  <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("attributes", attr.id)}>
+                                    Odebrat
+                                  </button>
+                                )}
                             </td>
                           )}
                         </tr>
@@ -5712,6 +5778,18 @@ export const ObjectDetail: React.FC<Props> = ({
                 {propertyGroups.map((group) => {
                 const expanded = expandedGroups[group.key] ?? true;
                 const isIdsOnlyGroup = group.properties.every(isIdsProjectedRequirement);
+                const idsSourceProperty = isIdsOnlyGroup ? group.properties[0] : undefined;
+                const idsSpecificationId = getIdsProjectedSpecificationId(idsSourceProperty);
+                const idsFacetId = getIdsProjectedFacetId(idsSourceProperty);
+                const idsFacetSection = getIdsProjectedFacetSection(idsSourceProperty);
+                const idsSpecification = idsSpecificationId
+                  ? project?.idsSpecifications?.find((item) => item.id === idsSpecificationId)
+                  : undefined;
+                const idsSpecificationOrdinal = idsSpecificationId
+                  ? idsSpecificationOrdinalById.get(idsSpecificationId)
+                  : undefined;
+                const idsPropertySetConstraint =
+                  getIdsProjectedPropertySetConstraint(idsSourceProperty);
                 const idsSpecificationName = isIdsOnlyGroup
                   ? getIdsProjectedSpecificationName(group.properties[0])
                   : undefined;
@@ -5738,6 +5816,9 @@ export const ObjectDetail: React.FC<Props> = ({
                   isSchemaBound ? propertyOptionsForGroup(group.source, group.psetName, currentId) : [];
                 const isTempGroup = group.psetName?.startsWith("_NEW_");
                 const displayPsetName = isTempGroup ? "" : (group.psetName ?? "");
+                const displayedIdsPsetName = idsPropertySetConstraint
+                  ? formatIdsConstraint(idsPropertySetConstraint)
+                  : displayPsetName;
                 const isInvalidGroup =
                   isSchemaBound && !!group.psetName && !isTempGroup && !isGroupAllowed(group.source, group.psetName);
                   const docHref =
@@ -5829,14 +5910,42 @@ export const ObjectDetail: React.FC<Props> = ({
                             IDS · {idsSpecificationName}
                           </span>
                         )}
+                        {isIdsOnlyGroup && idsSpecification && (
+                          <button
+                            type="button"
+                            data-testid={`edit-ids-property-group-${idsFacetId ?? idsSpecification.id}`}
+                            className="shrink-0 rounded border border-violet-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
+                            onClick={() => openIdsSpecificationEditor(idsSpecification, idsFacetId)}
+                            title={`Otevřít zdrojový facet v ${
+                              idsFacetSection === "applicability" ? "Použitelnosti" : "Požadavcích"
+                            }`}
+                          >
+                            Upravit IDS{idsSpecificationOrdinal ? ` #${idsSpecificationOrdinal}` : ""}
+                            {" · "}
+                            název skupiny
+                          </button>
+                        )}
                         {isInvalidGroup && (
                           <span className="shrink-0 rounded bg-red-100 px-2 py-1 text-[11px] font-semibold uppercase text-red-800">
                             Neplatné pro PredefinedType
                           </span>
                         )}
-                        {group.source === "CUSTOM" ? (
+                        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Název skupiny vlastností
+                        </span>
+                        {isIdsOnlyGroup ? (
+                          <input
+                            data-testid={`ids-projected-property-set-${idsFacetId ?? group.key}`}
+                            aria-label="Název skupiny vlastností z IDS"
+                            className="h-8 w-[min(24rem,45vw)] min-w-[11rem] max-w-full shrink-0 rounded border border-violet-200 bg-violet-50 px-2 py-1 text-sm text-violet-950"
+                            value={displayedIdsPsetName}
+                            readOnly
+                            title="Hodnota je projekcí kanonického IDS facetu. Upravte ji přes tlačítko Upravit IDS."
+                          />
+                        ) : group.source === "CUSTOM" ? (
                           <>
                             <input
+                              aria-label="Název skupiny vlastností"
                               className={`h-8 w-[min(18rem,40vw)] min-w-[8rem] max-w-full shrink-0 rounded border px-2 py-1 text-sm ${
                                 customGroupErrors[group.key] ? "border-red-300 bg-red-50" : "border-slate-300"
                               }`}
@@ -5874,6 +5983,7 @@ export const ObjectDetail: React.FC<Props> = ({
                               <DocLink href={docHref} label={(displayPsetName || group.psetName) ?? "IFC"} type="ifc" />
                             )}
                             <select
+                              aria-label="Název skupiny vlastností"
                               className={`h-8 w-auto min-w-[11rem] max-w-[min(24rem,40vw)] shrink-0 rounded border px-2 py-1 text-sm ${
                                 isInvalidGroup ? "border-red-400 bg-red-50 text-red-900" : "border-slate-300"
                               }`}
@@ -5948,10 +6058,12 @@ export const ObjectDetail: React.FC<Props> = ({
                       <div className="overflow-x-auto overflow-y-visible px-3 py-2" style={{ maxWidth: "100%" }}>
                         {isGroupLocked && (
                           <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800">
-                            Tato skupina je zamčená. Pro úpravy ji nejprve odemkněte.
+                            {isIdsOnlyGroup
+                              ? "Tato skupina je odvozená z kanonického IDS. Upravte zdrojový facet tlačítkem Upravit IDS v záhlaví skupiny."
+                              : "Tato skupina je zamčená. Pro úpravy ji nejprve odemkněte."}
                           </div>
                         )}
-                        {group.psetName && !group.psetName.startsWith("_NEW_") && (
+                        {!isIdsOnlyGroup && group.psetName && !group.psetName.startsWith("_NEW_") && (
                           <div className="mb-2 flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-slate-50/50 px-2 py-1.5">
                             <span className="text-xs font-medium text-slate-600">Výchozí účely užití pro tuto skupinu (dědi se na všechny vlastnosti):</span>
                             <UseCaseMultiSelect
@@ -6140,7 +6252,19 @@ export const ObjectDetail: React.FC<Props> = ({
                                   )}
                                   {!hiddenPropertyColumns.has(2) && (
                                     <td className="px-2 py-2">
-                                    {group.source === "CUSTOM" || isTempGroup ? (
+                                    {isIdsProjectedRequirement(prop) ? (
+                                      <input
+                                        data-testid={`ids-projected-property-name-${getIdsProjectedFacetId(prop) ?? prop.id}`}
+                                        aria-label="Název vlastnosti z IDS"
+                                        className="w-full rounded border border-violet-200 bg-violet-50 px-2 py-1 text-sm text-violet-950"
+                                        value={
+                                          getIdsProjectedPropertyNameConstraint(prop)
+                                            ? formatIdsConstraint(getIdsProjectedPropertyNameConstraint(prop)!)
+                                            : prop.propertyName
+                                        }
+                                        readOnly
+                                      />
+                                    ) : group.source === "CUSTOM" || isTempGroup ? (
                                       <div className="flex flex-col gap-0.5">
                                         <input
                                           className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
@@ -6858,9 +6982,13 @@ export const ObjectDetail: React.FC<Props> = ({
                                   )}
                                   {!hiddenPropertyColumns.has(12) && (
                                     <td className="px-2 py-2 text-right">
-                                      <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("properties", prop.id)}>
-                                        Odebrat
-                                      </button>
+                                      {isIdsProjectedRequirement(prop)
+                                        ? renderIdsEditAction(prop)
+                                        : (
+                                          <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("properties", prop.id)}>
+                                            Odebrat
+                                          </button>
+                                        )}
                                     </td>
                                   )}
                                 </tr>
@@ -7315,7 +7443,13 @@ export const ObjectDetail: React.FC<Props> = ({
                           )}
                           {!hiddenPartOfColumns.has(11) && (
                             <td className="px-2 py-2 text-right">
-                              <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("relations", rel.id)}>Odebrat</button>
+                              {isIdsProjected
+                                ? renderIdsEditAction(rel)
+                                : (
+                                  <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("relations", rel.id)}>
+                                    Odebrat
+                                  </button>
+                                )}
                             </td>
                           )}
                         </tr>
@@ -7992,7 +8126,13 @@ export const ObjectDetail: React.FC<Props> = ({
                         )}
                         {!hiddenMaterialColumns.has(11) && (
                           <td className="px-2 py-2 text-right">
-                            <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("materials", mat.id)}>Odebrat</button>
+                            {isIdsProjectedRequirement(mat)
+                              ? renderIdsEditAction(mat)
+                              : (
+                                <button className="text-xs text-red-600 hover:underline" onClick={() => removeRequirement("materials", mat.id)}>
+                                  Odebrat
+                                </button>
+                              )}
                           </td>
                         )}
                       </tr>
@@ -8441,9 +8581,13 @@ export const ObjectDetail: React.FC<Props> = ({
                             </button>
                           )}
                           {cls.readOnly && (
-                            <span className="text-xs text-slate-400" title={isIdsProjectedRequirement(cls) ? getIdsProjectedSpecificationName(cls) : "Tato klasifikace je z primárního systému a nelze ji odebrat"}>
-                              {isIdsProjectedRequirement(cls) ? "IDS" : "Primární"}
-                            </span>
+                            isIdsProjectedRequirement(cls)
+                              ? renderIdsEditAction(cls)
+                              : (
+                                <span className="text-xs text-slate-400" title="Tato klasifikace je z primárního systému a nelze ji odebrat">
+                                  Primární
+                                </span>
+                              )
                             )}
                           </td>
                         )}
@@ -8943,10 +9087,13 @@ export const ObjectDetail: React.FC<Props> = ({
                 onEditIdsGroup={(group) => {
                   const specificationId = group.idsReference?.specificationId;
                   if (!specificationId) return;
-                  setEditIdsSpecificationId(specificationId);
-                  setRequirementsViewMode("specifications");
-                  onFocusIdsSpecification?.(
-                    project.idsSpecifications?.find((item) => item.id === specificationId) ?? null,
+                  const specification = project.idsSpecifications?.find(
+                    (item) => item.id === specificationId,
+                  );
+                  if (!specification) return;
+                  openIdsSpecificationEditor(
+                    specification,
+                    group.idsReference?.facetIds[0],
                   );
                 }}
                 onAssignIdsGroup={onAssignIdsGroup}
@@ -8977,18 +9124,20 @@ export const ObjectDetail: React.FC<Props> = ({
               {requirementsViewMode === "object" && idsProjectedRequirementCount > 0 && (
                 <div className="border-b border-violet-200 bg-violet-50 px-4 py-2 text-xs text-violet-900">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
-                    {entityIdsSpecifications.map((specification, index) => (
+                    {entityIdsSpecifications.map((specification) => (
                       <button
                         type="button"
                         key={specification.id}
                         className="rounded border border-violet-300 bg-white px-2 py-1 text-[10px] font-semibold text-violet-800 hover:bg-violet-100"
                         onClick={() => {
-                          setEditIdsSpecificationId(specification.id);
-                          setRequirementsViewMode("specifications");
-                          onFocusIdsSpecification?.(specification);
+                          openIdsSpecificationEditor(specification);
                         }}
                       >
-                        Upravit IDS #{index + 1}: {specification.name || specification.identifier}
+                        Upravit IDS
+                        {idsSpecificationOrdinalById.get(specification.id)
+                          ? ` #${idsSpecificationOrdinalById.get(specification.id)}`
+                          : ""}
+                        : {specification.name || specification.identifier}
                       </button>
                     ))}
                   </div>

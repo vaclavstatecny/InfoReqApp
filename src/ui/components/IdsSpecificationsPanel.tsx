@@ -20,6 +20,12 @@ import {
 } from "../../ids/projectDefinition";
 import { IdsSpecificationEditor } from "./IdsSpecificationEditor";
 
+export interface IdsSpecificationEditRequest {
+  specificationId: string;
+  facetId?: string;
+  requestId: number;
+}
+
 interface Props {
   project: Project;
   object: ProjectObject;
@@ -34,7 +40,7 @@ interface Props {
   onOpenProjectDefinition?: () => void;
   onFocusSpecification?: (specification: IdsProjectSpecification | null) => void;
   focusedSpecificationId?: string | null;
-  editSpecificationId?: string | null;
+  editRequest?: IdsSpecificationEditRequest | null;
   onSaveSpecification?: (specification: IdsProjectSpecification) => void;
   onDuplicateSpecification?: (specificationId: string) => void;
   onDeleteSpecification?: (specificationId: string) => void;
@@ -359,7 +365,7 @@ export const IdsSpecificationsPanel: React.FC<Props> = ({
   onOpenProjectDefinition,
   onFocusSpecification,
   focusedSpecificationId,
-  editSpecificationId,
+  editRequest,
   onSaveSpecification,
   onDuplicateSpecification,
   onDeleteSpecification,
@@ -368,6 +374,7 @@ export const IdsSpecificationsPanel: React.FC<Props> = ({
   const [scope, setScope] = useState<"object" | "all">("object");
   const [openSpecificationId, setOpenSpecificationId] = useState<string | null>(null);
   const [draft, setDraft] = useState<IdsProjectSpecification | null>(null);
+  const [focusedFacetId, setFocusedFacetId] = useState<string | null>(null);
   const [validationMessages, setValidationMessages] = useState<{ errors: string[]; warnings: string[] } | null>(null);
   const openSpecificationIdRef = useRef<string | null>(null);
   const catalogsById = useMemo(
@@ -417,15 +424,18 @@ export const IdsSpecificationsPanel: React.FC<Props> = ({
   }, [focusedSpecificationId]);
 
   useEffect(() => {
-    if (!editSpecificationId) return;
-    const source = allSpecifications.find((item) => item.id === editSpecificationId);
+    if (!editRequest) return;
+    const source = (project.idsSpecifications ?? []).find(
+      (item) => item.id === editRequest.specificationId,
+    );
     if (!source) return;
     setScope("all");
     setOpenSpecificationId(source.id);
     openSpecificationIdRef.current = source.id;
     setDraft(structuredClone(source));
+    setFocusedFacetId(editRequest.facetId ?? null);
     setValidationMessages(null);
-  }, [editSpecificationId, allSpecifications]);
+  }, [editRequest?.requestId]);
 
   useEffect(() => {
     if (
@@ -637,6 +647,7 @@ export const IdsSpecificationsPanel: React.FC<Props> = ({
                         className="rounded border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-800 hover:bg-violet-100"
                         onClick={() => {
                           setDraft(structuredClone(specification));
+                          setFocusedFacetId(null);
                           setValidationMessages(null);
                         }}
                       >
@@ -677,6 +688,7 @@ export const IdsSpecificationsPanel: React.FC<Props> = ({
                           className="rounded border border-slate-300 px-3 py-1.5 text-xs text-slate-700"
                           onClick={() => {
                             setDraft(null);
+                            setFocusedFacetId(null);
                             setValidationMessages(null);
                           }}
                         >
@@ -695,6 +707,7 @@ export const IdsSpecificationsPanel: React.FC<Props> = ({
                             ) return;
                             onSaveSpecification?.(draft);
                             setDraft(null);
+                            setFocusedFacetId(null);
                             setValidationMessages(null);
                           }}
                         >
@@ -709,7 +722,12 @@ export const IdsSpecificationsPanel: React.FC<Props> = ({
                           {validationMessages.warnings.map((message) => <div key={`w:${message}`}>Upozornění: {message}</div>)}
                         </div>
                       )}
-                      <IdsSpecificationEditor project={project} value={draft} onChange={setDraft} />
+                      <IdsSpecificationEditor
+                        project={project}
+                        value={draft}
+                        focusedFacetId={focusedFacetId}
+                        onChange={setDraft}
+                      />
                     </div>
                   ) : (
                   <>
