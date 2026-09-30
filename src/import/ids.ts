@@ -21,7 +21,7 @@ import type {
   IdsValueConstraint,
 } from "../project/types";
 import { makeId } from "../utils/id";
-import { ensureProjectPhases, getDefaultPhases } from "../project/phases";
+import { DEFAULT_SINGLE_PHASE, ensureProjectPhases, getDefaultPhases } from "../project/phases";
 import {
   getDisplayLabel,
   getIfcDocumentationBaseUrl,
@@ -1353,6 +1353,7 @@ function buildCanonicalSpecifications(
   parsed: IdsParsed,
   systemEntryIdFor: (classification: IdsClassification) => string | undefined,
   unresolvedUsageKeys: Set<string>,
+  phaseScope?: { phaseId: string; existingById: Map<string, IdsProjectSpecification> },
 ): IdsProjectSpecification[] {
   const toFacets = (
     spec: IdsSpecification,
@@ -1397,7 +1398,15 @@ function buildCanonicalSpecifications(
   };
 
   return parsed.specifications.map((spec, index) => {
-    const id = getSpecGroupId(spec, index);
+    const baseId = getSpecGroupId(spec, index);
+    // Stejný identifikátor (01, 02, ...) se v souborech pro různé milníky opakuje.
+    // Pokud už v projektu existuje specifikace s tímto klíčem a patří do jiné fáze,
+    // dostane specifikace z tohoto souboru vlastní klíč s příponou fáze.
+    const existingForBase = phaseScope?.existingById.get(baseId);
+    const existingScope = existingForBase?.authoring?.scope?.phaseIds;
+    const id = phaseScope && existingScope?.length && !existingScope.includes(phaseScope.phaseId)
+      ? `${baseId}@${phaseScope.phaseId}`
+      : baseId;
     const specification: IdsProjectSpecification = {
       id,
       name: spec.name,
@@ -1410,6 +1419,7 @@ function buildCanonicalSpecifications(
       applicability: toFacets(spec, "applicability", id),
       requirements: toFacets(spec, "requirements", id),
       source: "imported",
+      ...(phaseScope ? { authoring: { scope: { phaseIds: [phaseScope.phaseId] } } } : {}),
     };
     const hash = hashIdsStandardSpecification(specification);
     specification.importTracking = {
@@ -1449,6 +1459,38 @@ function buildImportedIdsMetadata(info: IdsInfo): Project["idsMetadata"] | undef
     : undefined;
 }
 
+const normalizePhaseKey = (value: string): string =>
+  value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+
+/**
+ * Převede <ids:milestone> z hlavičky IDS na fázi projektu.
+ * - shoda podle názvu nebo kódu (bez diakritiky a velikosti písmen) použije existující fázi,
+ * - jinak se fáze vytvoří; u prázdného projektu s nedotčenou výchozí „Fáze1" ji nahradí.
+ */
+export function applyIdsMilestonePhase(
+  basePhases: Phase[],
+  milestone: string | undefined,
+  existingProject: Pick<Project, "objects" | "idsSpecifications"> | null,
+): { phases: Phase[]; phase?: Phase } {
+  const label = milestone?.trim();
+  if (!label) return { phases: basePhases };
+  const key = normalizePhaseKey(label);
+  const found = basePhases.find(
+    (phase) => normalizePhaseKey(phase.name) === key || normalizePhaseKey(phase.code) === key,
+  );
+  if (found) return { phases: basePhases, phase: found };
+  const phase: Phase = { id: makeId(), code: label, name: label };
+  const onlyDefault =
+    basePhases.length === 1 &&
+    basePhases[0].id === DEFAULT_SINGLE_PHASE.id &&
+    basePhases[0].name === DEFAULT_SINGLE_PHASE.name &&
+    basePhases[0].code === DEFAULT_SINGLE_PHASE.code;
+  const emptyProject =
+    !Object.keys(existingProject?.objects ?? {}).length &&
+    !(existingProject?.idsSpecifications?.length);
+  return { phases: onlyDefault && emptyProject ? [phase] : [...basePhases, phase], phase };
+}
+
 /**
  * Import s reportem pro UI. Nové IFC alternativy jsou po potvrzení vloženy do stromu,
  * zatímco nedostupné klasifikační katalogy vytvoří pouze označenou pomocnou strukturu.
@@ -1459,8 +1501,13 @@ export function mergeIdsIntoProjectWithReport(
   schemaIndex: SchemaIndex | null,
   options: IdsImportOptions = {},
 ): IdsImportResult {
-  const phases: Phase[] = existingProject?.phases?.length ? existingProject.phases : getDefaultPhases();
-  const phaseIds = phases.map((phase) => phase.id);
+  const basePhases: Phase[] = existingProject?.phases?.length ? existingProject.phases : getDefaultPhases();
+  const { phases, phase: milestonePhase } = applyIdsMilestonePhase(
+    basePhases,
+    parsed.info.milestone,
+    existingProject,
+  );
+  const phaseIds = milestonePhase ? [milestonePhase.id] : phases.map((phase) => phase.id);
   const existingEntries = existingProject?.classificationSystemEntries ?? [];
   const analysis = analyzeIdsClassificationImport(parsed, existingEntries);
   const requestedResolution = new Map(
@@ -1592,6 +1639,14 @@ export function mergeIdsIntoProjectWithReport(
     parsed,
     systemEntryIdFor,
     unresolvedUsageKeys,
+    milestonePhase
+      ? {
+          phaseId: milestonePhase.id,
+          existingById: new Map(
+            (existingProject?.idsSpecifications ?? []).map((specification) => [specification.id, specification]),
+          ),
+        }
+      : undefined,
   );
   const existingSpecifications = existingProject?.idsSpecifications ?? [];
   const specificationsById = new Map(
@@ -1732,6 +1787,11 @@ export function mergeIdsIntoProjectWithReport(
   });
 
   const objects: Record<string, ProjectObject> = { ...(existingProject?.objects ?? {}) };
+  // Existující objekt si ponechá své fáze a doplní se fáze z milníku tohoto souboru.
+  const withMilestone = (existing: string[] | undefined): string[] =>
+    existing
+      ? (milestonePhase ? Array.from(new Set([...existing, milestonePhase.id])) : existing)
+      : phaseIds;
   for (const code of entityCodes) {
     const existingObject = objects[code];
     const requirements = withoutImportedIdsProjection(existingObject?.requirements);
@@ -1764,8 +1824,8 @@ export function mergeIdsIntoProjectWithReport(
       predefinedType: existingObject?.predefinedType ?? (
         predefinedType ? { mode: "ENUM", value: predefinedType } : { mode: "NONE" }
       ),
-      ifcEntityPhases: existingObject?.ifcEntityPhases ?? phaseIds,
-      predefinedTypePhases: existingObject?.predefinedTypePhases ?? phaseIds,
+      ifcEntityPhases: withMilestone(existingObject?.ifcEntityPhases),
+      predefinedTypePhases: withMilestone(existingObject?.predefinedTypePhases),
       idsSpecMetadata: existingObject?.importedIdsSpecificationGroups?.length
         ? undefined
         : existingObject?.idsSpecMetadata,
@@ -1779,6 +1839,7 @@ export function mergeIdsIntoProjectWithReport(
   const idsVersion = parsed.specifications.find((spec) => spec.ifcVersion)?.ifcVersion;
   const ifcSchemaVersion = idsIfcVersionToSchemaVersion(idsVersion);
   const common = {
+    phases,
     idsMetadata: importedIdsMetadata ?? existingProject?.idsMetadata,
     classification: classificationData,
     classificationSystemEntries: entriesWithPrimary,
