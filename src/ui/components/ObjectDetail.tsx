@@ -1221,6 +1221,12 @@ const DATA_TYPE_MAPPING: Record<string, string> = {
   "boolean": "IFCBOOLEAN",
   "bool": "IFCBOOLEAN",
   
+  // Datové typy z bSDD / ComBIMe exportu (sloupec IFC_datový_typ)
+  "booleantype": "IFCBOOLEAN",
+  "integerdatatype": "IFCINTEGER",
+  "realdatatype": "IFCREAL",
+  "stringtype": "IFCLABEL",
+  "datestringtype": "IFCDATE",
   // Positive/non-negative length measures
   "ifcpositivelengthmeasure": "IFCPOSITIVELENGTHMEASURE",
 };
