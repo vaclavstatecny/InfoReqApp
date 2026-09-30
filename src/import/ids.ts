@@ -1860,7 +1860,6 @@ export function mergeIdsIntoProjectWithReport(
         description: parsed.info.description ?? undefined,
         createdAt: now,
         classifications: [],
-        phases,
         codeLists: [],
         ...common,
       });
